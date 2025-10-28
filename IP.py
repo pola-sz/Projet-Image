@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
@@ -7,6 +8,8 @@ from anisotropic_filtering import *
 from skimage import filters
 from skimage.filters.thresholding import _cross_entropy
 from skimage.filters import threshold_multiotsu
+
+
 
 #BROUILLON
 
@@ -46,11 +49,6 @@ def show_images(images, titles, is_bgr=False):
     plt.show()
 
 
-
-
-
-
-#show_images(images, titles)
 
 
 
@@ -108,7 +106,7 @@ def find_horizontal_length(img):
         else:
             break
 
-    for i in range(img_center[1], w+1):
+    for i in range(img_center[1], w):
         if img[img_center[0],i] == 1:
             length_w_2 += 1
         else:
@@ -127,7 +125,7 @@ def find_vertical_length(img):
         else:
             break
 
-    for i in range(img_center[0], h+1):
+    for i in range(img_center[0], h):
         if img[i,img_center[1]] == 1:
             length_h_2 += 1
         else:
@@ -137,11 +135,12 @@ def find_vertical_length(img):
 
 def find_best_image_orientation(img_arr, show=False):
     vertical_lengths = [ ]
-    angles = [i for i in range(0,181)]
+    angles = [i for i in range(-90,91)]
 
     array_to_img_object = Image.fromarray(img_arr)
+    h, w = img_arr.shape
     for angle in angles:
-        current_image = array_to_img_object.rotate(angle)
+        current_image = array_to_img_object.rotate(angle, center=(w//2,h//2))
         img_back_to_array = np.array(current_image)
         vertical_lengths.append(find_vertical_length(img_back_to_array))
 
@@ -163,7 +162,7 @@ def rotate_array(img_arr,angle):
     return img_back_to_array
 
 
-def skull_stripping(img_arr, show=False):
+def skull_stripping(img_arr, img_original, show=False):
     img_thresholded = img_arr
     kernel = np.ones((8,8),np.uint8)
     
@@ -211,7 +210,7 @@ def multi_otzu(image) :
 
     # Using the threshold values, we generate the three regions.
     regions = np.digitize(image, bins=thresholds)
-
+    """
     fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(10, 3.5))
 
     # Plotting the original image.
@@ -234,7 +233,9 @@ def multi_otzu(image) :
     plt.subplots_adjust()
 
     plt.show()
+    """
 
+    return regions
 
 
 
@@ -242,27 +243,68 @@ def multi_otzu(image) :
 #########################################################################################
 ##########################################MAIN###########################################
 #########################################################################################
+REP_OUI = "data/yes"
+REP_NON = "data/no"
 
-img = Image.open("./data/yes/Y44.jpg").convert('L')
-img = np.array(img)
-print(img.shape)
-img_original = img
+def image_to_arr(path) : 
+    with Image.open(path) as im : 
+        im = im.convert("L")
+        arr = np.array(im)
+    return arr
 
-show_image(img, title="Image de test")
+def data() :
+    fichiers = os.listdir(REP_OUI)
+    tumeur = []
+    for f in fichiers : 
+            if f.endswith(".jpg") : 
+                tumeur.append(image_to_arr(REP_OUI + "/" + f))
+    fichiers = os.listdir(REP_NON)
+
+    no_tum = []
+    for f in fichiers : 
+            if f.endswith(".jpg") : 
+                no_tum.append(image_to_arr(REP_NON + "/" + f))
+    return tumeur, no_tum
 
 
-img_filtered = anisodiff(img)
-img_filtered = anisodiff(img_filtered)
-img_filtered = anisodiff(img_filtered)
-images = [img, img_filtered]
-titles = ["Avant filtrage", "Post-Filtrage"]
+def cout(image) : 
+    row, col = image.shape
+    droite = image[:, :col // 2]
+    droite = np.reshape(droite, droite.shape[0] * droite.shape[1])
+    gauche = image[:, col // 2 : col//2 * 2]
+    gauche = gauche[:, ::-1]
+    gauche = np.reshape(gauche, gauche.shape[0] * gauche.shape[1])
+
+    dist = np.sqrt((gauche - droite) ** 2)
+    return np.mean(dist)
 
 
-img_thresholded = cross_entropy_thresholding(img_filtered)
-img_thresholded[img_thresholded==True] = 255
-img_thresholded[img_thresholded==False] = 0
-img_thresholded = np.astype(img_thresholded, np.uint8)
+tumeur, no_tum = data()
 
-img_skull_stripped = skull_stripping(img_thresholded)
+couts = []
+for image in no_tum:
+    img = image
 
-img_otzu = multi_otzu(img_skull_stripped)
+    #Anisotropic Filtering
+    img_filtered = anisodiff(img)
+    img_filtered = anisodiff(img_filtered)
+    img_filtered = anisodiff(img_filtered)
+
+
+    #Cross entropy-thresholding
+    img_thresholded = cross_entropy_thresholding(img_filtered)
+    img_thresholded[img_thresholded==True] = 255
+    img_thresholded[img_thresholded==False] = 0
+    img_thresholded = np.astype(img_thresholded, np.uint8)
+
+    #Skull Stripping
+    img_skull_stripped = skull_stripping(img_thresholded,img)
+
+    #Otzu
+    img_otzu = multi_otzu(img_skull_stripped)
+    print(img_otzu.shape)
+    couts.append(cout(img_otzu))
+
+
+plt.hist(couts)
+plt.show()
