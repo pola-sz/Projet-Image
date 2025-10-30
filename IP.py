@@ -4,11 +4,10 @@ import matplotlib.pyplot as plt
 from PIL import Image
 import cv2
 from anisotropic_filtering import *
-
-from skimage import filters
 from skimage.filters.thresholding import _cross_entropy
 from skimage.filters import threshold_multiotsu
 
+from scipy import ndimage
 
 
 #BROUILLON
@@ -56,184 +55,131 @@ def show_images(images, titles, is_bgr=False):
 
 #1. Thresholding by cross-entropy
 
-def cross_entropy_thresholding(img_arr):
+def cross_entropy_thresholding(img_arr, show = False):
     thresholds = np.arange(np.min(img_arr) + 1.5, np.max(img_arr) - 1.5)
     entropies = [_cross_entropy(img_arr, t) for t in thresholds]
 
     optimal_camera_threshold = thresholds[np.argmin(entropies)]
     img_thresholded = img_arr > optimal_camera_threshold
 
-    """
-    fig, ax = plt.subplots(1, 3, figsize=(8, 3))
-    ax[0].imshow(img, cmap='gray')
-    ax[0].set_title('image')
-    ax[0].set_axis_off()
+    if show == True:
+        fig, ax = plt.subplots(1, 3, figsize=(8, 3))
+        ax[0].imshow(img, cmap='gray')
+        ax[0].set_title('image')
+        ax[0].set_axis_off()
 
 
-    ax[1].imshow(img_thresholded, cmap='gray')
-    ax[1].set_title('thresholded')
-    ax[1].set_axis_off()
+        ax[1].imshow(img_thresholded, cmap='gray')
+        ax[1].set_title('thresholded')
+        ax[1].set_axis_off()
 
-    ax[2].plot(thresholds, entropies)
-    ax[2].set_xlabel('thresholds')
-    ax[2].set_ylabel('cross-entropy')
-    ax[2].vlines(
-        optimal_camera_threshold,
-        ymin=np.min(entropies) - 0.05 * np.ptp(entropies),
-        ymax=np.max(entropies) - 0.05 * np.ptp(entropies),
-    )
-    ax[2].set_title('optimal threshold')
+        ax[2].plot(thresholds, entropies)
+        ax[2].set_xlabel('thresholds')
+        ax[2].set_ylabel('cross-entropy')
+        ax[2].vlines(
+            optimal_camera_threshold,
+            ymin=np.min(entropies) - 0.05 * np.ptp(entropies),
+            ymax=np.max(entropies) - 0.05 * np.ptp(entropies),
+        )
+        ax[2].set_title('optimal threshold')
 
-    fig.tight_layout()
+        fig.tight_layout()
 
-    plt.show()
-    """
+        plt.show()
 
     return img_thresholded
 
 
+def make_arr_Int(arr):
+    arr_copy = arr
+    arr_copy[arr_copy==True] = 255
+    arr_copy[arr_copy==False] = 0
+    arr_copy = np.astype(arr_copy, np.uint8)
 
-def find_horizontal_length(img):
+    return arr_copy
 
-    h, w = img.shape
-    img_center = (h//2,w//2)
-    length_w_1 = 0
-    length_w_2 = 0
+def fit_and_shrink_ellipse_mask(mask, shrink_percent=15):
 
-    for i in range(img_center[1]-1,0,-1):
-        if img[img_center[0],i] == 1:
-            length_w_1+=1
-        else:
-            break
+    mask = mask.astype(np.uint8)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        print("No Contours")
+        return None
 
-    for i in range(img_center[1], w):
-        if img[img_center[0],i] == 1:
-            length_w_2 += 1
-        else:
-            break
-    
-    return max(length_w_1,length_w_2)
+    contour = max(contours, key=cv2.contourArea)
+    if len(contour) < 5:
+        print("Contours too small")
+        return None
 
-def find_vertical_length(img):
-    h, w = img.shape
-    img_center = (h//2,w//2)
-    length_h_1 = 0
-    length_h_2 = 0
-    for i in range(img_center[0]-1,0,-1):
-        if img[i,img_center[1]] == 1:
-            length_h_1+=1
-        else:
-            break
+    (xc, yc), (major, minor), angle = cv2.fitEllipse(contour)
 
-    for i in range(img_center[0], h):
-        if img[i,img_center[1]] == 1:
-            length_h_2 += 1
-        else:
-            break
-    
-    return max(length_h_1,length_h_2)
+    h, w = mask.shape
+    rotation_matrix = cv2.getRotationMatrix2D((xc, yc), angle, 1.0)
+    rotated_mask = cv2.warpAffine(mask, rotation_matrix, (w, h), flags=cv2.INTER_NEAREST)
 
-def find_best_image_orientation(img_arr, show=False):
-    vertical_lengths = [ ]
-    angles = [i for i in range(-90,91)]
+    new_center = np.dot(rotation_matrix, np.array([xc, yc, 1]))
+    new_xc, new_yc = new_center[:2]
 
-    array_to_img_object = Image.fromarray(img_arr)
-    h, w = img_arr.shape
-    for angle in angles:
-        current_image = array_to_img_object.rotate(angle, center=(w//2,h//2))
-        img_back_to_array = np.array(current_image)
-        vertical_lengths.append(find_vertical_length(img_back_to_array))
+    scale = (100 - shrink_percent) / 100.0
+    shrunk_major = major * scale
+    shrunk_minor = minor * scale
+
+    ellipse_mask = np.zeros_like(rotated_mask, dtype=np.uint8)
+    cv2.ellipse(
+        ellipse_mask,
+        (int(new_xc), int(new_yc)),
+        (int(shrunk_major / 2), int(shrunk_minor / 2)),
+        0, 0, 360, 1, -1
+    )
+
+    return ellipse_mask
 
 
+def skull_stripping(img_arr, show=False):
+    img_skull = img_arr
 
-    correct_angle = angles[np.argmax(vertical_lengths)]
-    print("Correct angle : ", correct_angle)
-
-    img = np.array(array_to_img_object.rotate(correct_angle))
-
-    show_image(img, title="New Angle", cmap="gray", show=show)
-
-    return correct_angle, img
-
-def rotate_array(img_arr,angle):
-    array_to_img_object = Image.fromarray(img_arr)
-    current_image = array_to_img_object.rotate(angle)
-    img_back_to_array = np.array(current_image)
-    return img_back_to_array
-
-
-def skull_stripping(img_arr, img_original, show=False):
-    img_thresholded = img_arr
-    kernel = np.ones((8,8),np.uint8)
+    show_image(img_skull, title="Skull", cmap="gray", show = show)
+    img_skull = ndimage.binary_fill_holes(img_skull)
+    img_skull = make_arr_Int(img_skull)
     
 
-    #Fermeture et Ouverture pour nettoyer
-    img_thresholded = cv2.morphologyEx(img_thresholded,cv2.MORPH_OPEN,kernel)
-
-    show_image(img_thresholded, title="Post Morphological OP", cmap="gray", show=show)
-
-
-    #Ellipse drawing:
-
-    best_angle, img_thresholded = find_best_image_orientation(img_thresholded)
-    h,w= img_thresholded.shape
-    center = (w//2,h//2)
-    axes = (find_horizontal_length(img_thresholded), find_vertical_length(img_thresholded))
-    angle = 0
-    startAngle = 0
-    endAngle = 360
-    color = (255,255,255)
-    thickness = -1
-    
-    #ellipse(img, center, axes, angle, startAngle, endAngle, color[, thickness[, lineType[, shift]]]) -> img
-    img_ellipse = np.zeros_like(img_original)
-    cv2.ellipse(img_ellipse, center, axes, angle, startAngle, endAngle, color, thickness)
-
-    kernel = np.ones((3,3),np.uint8)
-    img_ellipse = cv2.dilate(img_ellipse,kernel,iterations = 1)
-    img_ellipse_mask = img_ellipse > 254
-
-    show_image(img_ellipse, title="Skull stripping Mask", cmap="gray", show=show)
-    image_rotated = rotate_array(img_original,best_angle)
-    img_skull_stripped = image_rotated*img_ellipse_mask
-    show_image(img_skull_stripped, title="Original Post Skull Stripping", cmap="gray", show=show)
-
-    return img_skull_stripped
+    return fit_and_shrink_ellipse_mask(img_skull)
 
 
 
 
-def multi_otzu(image) : 
+
+
+def multi_otzu(image, show=False) : 
     # Applying multi-Otsu threshold for the default value, generating
     # three classes.
     thresholds = threshold_multiotsu(image)
 
     # Using the threshold values, we generate the three regions.
     regions = np.digitize(image, bins=thresholds)
-    """
-    fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(10, 3.5))
+    if show == True:
+        fig, ax = plt.subplots(nrows=1, ncols=3, figsize=(10, 3.5))
 
-    # Plotting the original image.
-    ax[0].imshow(image, cmap='gray')
-    ax[0].set_title('Original')
-    ax[0].axis('off')
+        # Plotting the original image.
+        ax[0].imshow(image, cmap='gray')
+        ax[0].set_title('Original')
+        ax[0].axis('off')
 
-    # Plotting the histogram and the two thresholds obtained from
-    # multi-Otsu.
-    ax[1].hist(image.ravel(), bins=255)
-    ax[1].set_title('Histogram')
-    for thresh in thresholds:
-        ax[1].axvline(thresh, color='r')
+        # Plotting the histogram and the two thresholds obtained from
+        # multi-Otsu.
+        ax[1].hist(image.ravel(), bins=255)
+        ax[1].set_title('Histogram')
+        for thresh in thresholds:
+            ax[1].axvline(thresh, color='r')
 
-    # Plotting the Multi Otsu result.
-    ax[2].imshow(regions, cmap='jet')
-    ax[2].set_title('Multi-Otsu result')
-    ax[2].axis('off')
+        # Plotting the Multi Otsu result.
+        ax[2].imshow(regions, cmap='jet')
+        ax[2].set_title('Multi-Otsu result')
+        ax[2].axis('off')
 
-    plt.subplots_adjust()
+        plt.subplots_adjust()
 
-    plt.show()
-    """
+        plt.show()
 
     return regions
 
@@ -292,17 +238,23 @@ for image in no_tum:
 
 
     #Cross entropy-thresholding
-    img_thresholded = cross_entropy_thresholding(img_filtered)
-    img_thresholded[img_thresholded==True] = 255
-    img_thresholded[img_thresholded==False] = 0
-    img_thresholded = np.astype(img_thresholded, np.uint8)
+    img_thresholded = cross_entropy_thresholding(img_filtered, show=False)
+    img_thresholded = make_arr_Int(img_thresholded)
 
     #Skull Stripping
-    img_skull_stripped = skull_stripping(img_thresholded,img)
+    img_skull_stripped = skull_stripping(img_thresholded, show=False)
+    if img_skull_stripped is None:
+        continue
+    show_image(img_skull_stripped, title="Skull Stripped Mask", cmap="gray", show=False)
+
+    masked = img * (img_skull_stripped > 0)
+    masked_display = cv2.normalize(masked, None, 0, 255, cv2.NORM_MINMAX)
+    masked_display = masked_display.astype(np.uint8)
+
+    show_image(masked_display, title="Skull Stripped", cmap="gray", show=False)
 
     #Otzu
-    img_otzu = multi_otzu(img_skull_stripped)
-    print(img_otzu.shape)
+    img_otzu = multi_otzu(masked_display)
     couts.append(cout(img_otzu))
 
 
