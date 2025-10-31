@@ -11,6 +11,10 @@ from skimage.filters import threshold_multiotsu
 from sklearn.neighbors import KernelDensity
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, accuracy_score
 import scipy.ndimage as ndimage
+from sklearn.decomposition import PCA
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
 
 
 REP_OUI = "data/yes"
@@ -160,10 +164,13 @@ def skull_stripping(img_arr, show=False):
     return fit_and_shrink_ellipse_mask(img_skull)
 
 
-def multi_otzu(image, show = False) : 
+def multi_otsu(image, show = False) : 
     # Applying multi-Otsu threshold for the default value, generating
     # three classes.
-    thresholds = threshold_multiotsu(image)
+    try : 
+        thresholds = threshold_multiotsu(image)
+    except ValueError : 
+        pass
 
     # Using the threshold values, we generate the three regions.
     regions = np.digitize(image, bins=thresholds)
@@ -219,14 +226,52 @@ def cout(image) :
 
     return np.max(cout)
 
+
+taille = -1
+
+def nouv_taille(tum, non_tum) : 
+        global taille
+        list = []
+        min_taille = 10000000000000000
+        nb_non_tum = 0
+        for el in non_tum : 
+            if isinstance(el.shape, tuple) and (len(el.shape) == 2) and (np.unique(el).shape[0] > 2):
+                list.append(el)
+                min_taille = min (min_taille, el.shape[0] * el.shape[1])
+                nb_non_tum += 1
+
+        for el in tum : 
+            if isinstance(el.shape, tuple) and (len(el.shape) == 2) and (np.unique(el).shape[0] > 2):
+                list.append(el)
+                min_taille = min (min_taille, el.shape[0] * el.shape[1])
+        
+        print(taille)
+        if taille == -1 : 
+            taille = min_taille
+        else : 
+            min_taille = taille
+        print(taille)
+        x = np.zeros((len(list), min_taille))
+        for i, el in enumerate(list) : 
+            el = np.resize(el, (min_taille,))
+            x[i] = el
+        
+        y = np.zeros((len(list), ))
+        print(y.shape)
+        print(nb_non_tum)
+        y[ nb_non_tum : ] = 1
+
+        
+        return x, y
+
 def data_from_rep() :
     fichiers = os.listdir(REP_OUI)
     tumeur = []
     for f in fichiers : 
-            if f.endswith(".jpg") : 
+            
+            if f.endswith(".jpg") and f != "Y103.jpg" : 
                 tumeur.append(image_to_arr(REP_OUI + "/" + f))
     fichiers = os.listdir(REP_NON)
-
     no_tum = []
     for f in fichiers : 
             if f.endswith(".jpg") : 
@@ -235,10 +280,9 @@ def data_from_rep() :
 
 
 def extraction(base, show = False) : 
-    couts = []
+    im = []
     for image in base:
         img = image
-
         #Anisotropic Filtering
         img_filtered = anisodiff(img)
         img_filtered = anisodiff(img_filtered)
@@ -256,11 +300,12 @@ def extraction(base, show = False) :
         img_stripped = img_filtered
         img_stripped[img_mask == 0] = 0
 
-        #Otzu
-        img_otzu = multi_otzu(img_stripped, show)
-        couts.append(cout(img_otzu))
+        #Otsu
+        img_otsu = multi_otsu(img_stripped, show)
+        im.append(img_otsu)
+        #couts.append(cout(img_otzu))
 
-    return np.array(couts)
+    return im
 
 
 def train_val_split(tumeur, non_tumeur) : 
@@ -309,3 +354,14 @@ def matrice_conf(kde1, kde2, tum_test, non_tum_test) :
     print(str(np.round(accuracy_score(y_test, y_pred) *100, 2) ) + " %")
     return(confusion_matrix(y_test, y_pred))
     
+
+
+def classif(X_train, y_train, n_com = 40, l_rate = "auto") : 
+    clf = make_pipeline(StandardScaler(),PCA(n_com), SVC(gamma=l_rate))
+    clf.fit(X_train, y_train)
+    return clf
+
+def pred(clf, X) : 
+    return clf.predict(X)
+
+
